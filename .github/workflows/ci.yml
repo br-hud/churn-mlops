@@ -1,3 +1,4 @@
+# CI workflow for testing and Docker build
 name: CI
 
 on:
