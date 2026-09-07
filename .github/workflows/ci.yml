@@ -29,5 +29,36 @@ jobs:
       - name: Run tests
         run: pytest -v
 
+      - name: Download training data
+        env:
+          BASE: https://raw.githubusercontent.com/IBM
+          REPO: telco-customer-churn-on-icp4d/master/data
+        run: |
+          mkdir -p data/raw
+          curl -sSL \
+            -o data/raw/Telco-Customer-Churn.csv \
+            "$BASE/$REPO/Telco-Customer-Churn.csv"
+
+      - name: Prepare data
+        run: |
+          python src/prep.py \
+            --input_data data/raw/Telco-Customer-Churn.csv \
+            --output_data outputs/clean
+
+      - name: Train model
+        run: |
+          python src/train.py \
+            --training_data outputs/clean \
+            --reg_rate 0.1 \
+            --model_output outputs/model \
+            --test_data_output outputs/test
+
+      - name: Evaluate model
+        run: |
+          python src/evaluate.py \
+            --model_input outputs/model \
+            --test_data outputs/test \
+            --output_dir outputs/metrics
+
       - name: Build Docker image
         run: docker build -t churn-api:ci .
