@@ -9,6 +9,9 @@ on:
     branches:
       - main
 
+env:
+  IMAGE_NAME: churn-api
+
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
@@ -63,3 +66,101 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t churn-api:ci .
+
+  push-image:
+    name: Push image to ACR
+    needs: test-and-build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to the registry
+        run: az acr login --name ${{ vars.ACR_NAME }}
+
+      - name: Rebuild the model
+        env:
+          BASE: https://raw.githubusercontent.com/IBM
+          REPO: telco-customer-churn-on-icp4d/master/data
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          mkdir -p data/raw
+          curl -sSL \
+            -o data/raw/Telco-Customer-Churn.csv \
+            "$BASE/$REPO/Telco-Customer-Churn.csv"
+          python src/prep.py \
+            --input_data data/raw/Telco-Customer-Churn.csv \
+            --output_data outputs/clean
+          python src/train.py \
+            --training_data outputs/clean \
+            --model_output outputs/model \
+            --test_data_output outputs/test
+
+      - name: Build and push, tagged with the commit
+        run: |
+          REGISTRY=${{ vars.ACR_NAME }}.azurecr.io
+          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} .
+          docker tag $REGISTRY/$IMAGE_NAME:${{ github.sha }} \
+            $REGISTRY/$IMAGE_NAME:latest
+          docker push $REGISTRY/$IMAGE_NAME:${{ github.sha }}
+          docker push $REGISTRY/$IMAGE_NAME:latest
+
+  deploy:
+    name: Deploy
+    needs: push-image
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Update the container app
+        run: |
+          REGISTRY=${{ vars.ACR_NAME }}.azurecr.io
+          az containerapp update \
+            --name churn-api \
+            --resource-group ${{ vars.RESOURCE_GROUP }} \
+            --image $REGISTRY/$IMAGE_NAME:${{ github.sha }}
+
+      - name: Get the public URL
+        id: url
+        run: |
+          FQDN=$(az containerapp show \
+            --name churn-api \
+            --resource-group ${{ vars.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
+          echo "Deployed to https://$FQDN"
+
+      - name: Smoke test the live endpoint
+        run: |
+          for i in $(seq 1 20); do
+            URL=https://${{ steps.url.outputs.fqdn }}/health
+            if curl -sf "$URL"; then
+              echo "healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "endpoint did not become healthy"
+          exit 1
+
+      - name: Summary
+        run: |
+          echo "### Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "- Image tag: ${{ github.sha }}" \
+            >> $GITHUB_STEP_SUMMARY
+          echo "- URL: https://${{ steps.url.outputs.fqdn }}" \
+            >> $GITHUB_STEP_SUMMARY
