@@ -1,0 +1,23 @@
+replicaCount: 3
+
+image:
+  repository: churnmlops25855.azurecr.io/churn-api
+  tag: v1
+
+decisionThreshold: "0.3"
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "250m"
+    memory: "256Mi"
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: webapprouting.kubernetes.azure.com
